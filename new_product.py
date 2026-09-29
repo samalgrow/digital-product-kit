@@ -12,16 +12,23 @@ What it does:
   5. Writes the sales page and thank-you page
   6. Configures nginx and gets an HTTPS certificate
 Safe to run again: it updates what exists instead of making duplicates.
+
+It asks for your Stripe, Resend and GoDaddy (or Cloudflare) keys each time and never
+saves them. What stays on the server can't touch your money, your domain or your
+email account: a Stripe webhook secret and a Resend key that can only send email
+from this one domain.
 """
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from getpass import getpass
 from html import escape
 from pathlib import Path
 
@@ -45,41 +52,81 @@ def sudo(*cmd, stdin=None):
                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
 
+SETUP_KEYS = ("STRIPE_SECRET_KEY", "RESEND_API_KEY", "GODADDY_TOKEN", "CLOUDFLARE_API_TOKEN")
+
+
 def check_env():
-    # "sk_test_..." and "you@example.com" are the placeholders from .env.example.
-    missing = [k for k in ("STRIPE_SECRET_KEY", "RESEND_API_KEY", "SUPPORT_EMAIL")
-               if not ENV.get(k) or "..." in ENV[k] or ENV[k].endswith("@example.com")]
-    if missing:
-        sys.exit(f"Missing in .env: {', '.join(missing)}. Run: nano .env")
+    email = ENV.get("SUPPORT_EMAIL", "")
+    if "@" not in email or email.endswith("@example.com"):
+        sys.exit("Set SUPPORT_EMAIL in .env first. Run: nano .env")
+    saved = [k for k in SETUP_KEYS if ENV.get(k)]
+    if saved:
+        sys.exit(f"Remove these from .env, they shouldn't be saved on the server: "
+                 f"{', '.join(saved)}. The command asks for them when it needs them.")
+
+
+def ask_key(name, label, prefixes=(), optional=False):
+    """Typed in (hidden) or taken from the shell environment. Never written to disk."""
+    value = os.environ.get(name) or getpass(f"  {label}: ").strip()
+    if not value and optional:
+        return ""
+    if not value or (prefixes and not value.startswith(prefixes)):
+        sys.exit(f"That doesn't look like a {label.split(' (')[0]}. Nothing was changed.")
+    return value
 
 
 # ------------------------------------------------------------------ Stripe
 
 
-def stripe_product(args, slug, cents):
-    found = stripe("GET", "/v1/products/search",
+def stripe_product(key, args, slug, cents, domain):
+    """Product, price and the Payment Link behind the Buy button."""
+    found = stripe(key, "GET", "/v1/products/search",
                    {"query": f"metadata['product_slug']:'{slug}'"})["data"]
     if found:
-        product = stripe("POST", f"/v1/products/{found[0]['id']}",
+        product = stripe(key, "POST", f"/v1/products/{found[0]['id']}",
                          {"name": args.name, "active": "true"})
     else:
-        product = stripe("POST", "/v1/products", {"name": args.name,
-                                                   "metadata[product_slug]": slug})
-    prices = stripe("GET", "/v1/prices", {"product": product["id"], "active": "true"})["data"]
+        product = stripe(key, "POST", "/v1/products", {"name": args.name,
+                                                        "metadata[product_slug]": slug})
+    prices = stripe(key, "GET", "/v1/prices", {"product": product["id"], "active": "true"})["data"]
     price = next((p for p in prices if p["unit_amount"] == cents
                   and p["currency"] == args.currency), None)
     if not price:
-        price = stripe("POST", "/v1/prices", {"product": product["id"], "unit_amount": cents,
-                                              "currency": args.currency})
-    return product["id"], price["id"]
+        price = stripe(key, "POST", "/v1/prices", {"product": product["id"], "unit_amount": cents,
+                                                   "currency": args.currency})
+
+    # Reuse the link while the price and domain are the same, otherwise replace it.
+    meta = product.get("metadata", {})
+    link = None
+    if meta.get("payment_link_id"):
+        link = stripe(key, "GET", f"/v1/payment_links/{meta['payment_link_id']}")
+        lm = link.get("metadata", {})
+        if not link["active"] or lm.get("price_id") != price["id"] or lm.get("domain") != domain:
+            stripe(key, "POST", f"/v1/payment_links/{link['id']}", {"active": "false"})
+            link = None
+    if not link:
+        link = stripe(key, "POST", "/v1/payment_links", {
+            "line_items[0][price]": price["id"],
+            "line_items[0][quantity]": "1",
+            # Copied onto every checkout, so the webhook knows which product was bought.
+            "metadata[product_slug]": slug,
+            "metadata[price_id]": price["id"],
+            "metadata[domain]": domain,
+            "after_completion[type]": "redirect",
+            "after_completion[redirect][url]":
+                f"https://{domain}/thank-you.html?session_id={{CHECKOUT_SESSION_ID}}",
+            "allow_promotion_codes": "true",
+        })
+        stripe(key, "POST", f"/v1/products/{product['id']}",
+               {"metadata[payment_link_id]": link["id"]})
+    return product["id"], price["id"], link["url"]
 
 
-def stripe_webhook(conn, domain):
+def stripe_webhook(key, conn, domain, mode):
     """One webhook per Stripe mode (test/live) is enough for every product."""
-    mode = "test" if "_test_" in ENV["STRIPE_SECRET_KEY"] else "live"
     if get_setting(conn, f"webhook_secret_{mode}"):
         return "already set up"
-    endpoint = stripe("POST", "/v1/webhook_endpoints", {
+    endpoint = stripe(key, "POST", "/v1/webhook_endpoints", {
         "url": f"https://{domain}/webhook",
         "enabled_events[0]": "checkout.session.completed",
         "enabled_events[1]": "checkout.session.async_payment_succeeded",
@@ -125,14 +172,27 @@ def ensure_domain(args, domain, provider_name, dns):
 
 
 
-def resend_domain(domain):
-    headers = {"Authorization": f"Bearer {ENV['RESEND_API_KEY']}"}
+def resend_domain(key, domain):
+    headers = {"Authorization": f"Bearer {key}"}
     existing = [d for d in http("GET", "https://api.resend.com/domains", headers=headers)["data"]
                 if d["name"] == domain]
     created = existing[0] if existing else http(
         "POST", "https://api.resend.com/domains", headers=headers, json_body={"name": domain})
     detail = http("GET", f"https://api.resend.com/domains/{created['id']}", headers=headers)
     return detail["id"], detail["status"], detail["records"], headers
+
+
+def resend_send_key(conn, headers, domain, domain_id):
+    """The server keeps a key that can only send email, and only from this domain."""
+    if get_setting(conn, f"resend_send_key:{domain}"):
+        return "already set up"
+    created = http("POST", "https://api.resend.com/api-keys", headers=headers, json_body={
+        "name": f"digital-product-kit {domain} (send only)",
+        "permission": "sending_access",
+        "domain_id": domain_id,
+    })
+    set_setting(conn, f"resend_send_key:{domain}", created["token"])
+    return "send-only key made for this domain"
 
 
 def wait_for_resend(domain_id, headers, minutes=5):
@@ -149,8 +209,9 @@ def wait_for_resend(domain_id, headers, minutes=5):
 # ------------------------------------------------------------------ web
 
 
-def write_pages(args, domain, webroot):
+def write_pages(args, domain, webroot, buy_url):
     fill = {
+        "{{BUY_URL}}": escape(buy_url),
         "{{TITLE}}": escape(args.name),
         "{{DESCRIPTION}}": escape(args.description),
         "{{PRICE}}": escape(format_price(args.price, args.currency)),
@@ -171,7 +232,8 @@ def write_pages(args, domain, webroot):
 
 def nginx_config(domain, webroot, https):
     proxy = f"""
-    location ~ ^/(checkout|webhook|order-link|downloads/) {{
+    location ~ ^/(webhook|order-link|downloads/) {{
+        limit_req zone=dpk burst=20 nodelay;
         proxy_pass http://127.0.0.1:{PORT};
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -197,6 +259,7 @@ def nginx_config(domain, webroot, https):
     listen 80;
     listen [::]:80;
     server_name {domain} www.{domain};
+    server_tokens off;
     {acme}
     location / {{ return 301 https://{domain}$request_uri; }}
 }}
@@ -207,15 +270,24 @@ server {{
     server_name {domain} www.{domain};
     ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
+    server_tokens off;
+    add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
     add_header Referrer-Policy same-origin always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
     root {webroot};
 {proxy}
 }}
 """
 
 
+RATE_LIMIT = "limit_req_zone $binary_remote_addr zone=dpk:10m rate=10r/s;\n"
+
+
 def install_nginx(domain, conf):
+    # At most 10 requests a second per visitor to the service (burst 20).
+    sudo("tee", "/etc/nginx/conf.d/digital-product-kit.conf", stdin=RATE_LIMIT.encode())
     path = f"/etc/nginx/sites-available/{domain}"
     sudo("tee", path, stdin=conf.encode())
     sudo("ln", "-sf", path, f"/etc/nginx/sites-enabled/{domain}")
@@ -278,9 +350,17 @@ def main():
             sys.exit(f"Not a file: {f}")
 
     print(f"{BOLD}Setting up {args.name} on {domain}{RESET}")
+    print(f"{DIM}Paste each key when asked (right-click or Ctrl+Shift+V). It stays hidden "
+          f"and is never saved.{RESET}")
+    stripe_key = ask_key("STRIPE_SECRET_KEY", "Stripe secret key (sk_...)", ("sk_", "rk_"))
+    resend_key = ask_key("RESEND_API_KEY", "Resend API key, full access (re_...)", ("re_",))
+    godaddy = ask_key("GODADDY_TOKEN", "GoDaddy token (or press Enter to use Cloudflare)",
+                      optional=True)
+    cloudflare = "" if godaddy else ask_key("CLOUDFLARE_API_TOKEN", "Cloudflare token")
+    mode = "test" if "_test_" in stripe_key else "live"
 
     step("1. Domain")
-    provider_name, dns = provider_for(domain)
+    provider_name, dns = provider_for(domain, godaddy, cloudflare)
     done(ensure_domain(args, domain, provider_name, dns))
 
     step("2. Files")
@@ -294,11 +374,12 @@ def main():
         done(f"{Path(f).name} stored")
 
     step("3. Stripe")
-    product_id, price_id = stripe_product(args, slug, cents)
+    product_id, price_id, buy_url = stripe_product(stripe_key, args, slug, cents, domain)
     done(f"product {product_id}")
     done(f"price {format_price(args.price, args.currency)} ({price_id})")
+    done(f"checkout link {buy_url}")
     with db() as conn:
-        done(f"webhook {stripe_webhook(conn, domain)}")
+        done(f"webhook {stripe_webhook(stripe_key, conn, domain, mode)}")
         conn.execute(
             "INSERT INTO products (slug, title, domain, seller_name, price_id, files) "
             "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET title = excluded.title, "
@@ -314,24 +395,25 @@ def main():
     done(f"www.{domain} -> {domain}")
 
     step("5. Order email")
-    resend_id, status, records, resend_headers = resend_domain(domain)
+    resend_id, status, records, resend_headers = resend_domain(resend_key, domain)
     for r in records:
         name = r["name"].removesuffix(f".{domain}")
         dns.set_record(r["type"], name, r["value"],
                        priority=int(r["priority"]) if r.get("priority") is not None else None)
         done(f"{r['type']} {name}")
+    with db() as conn:
+        done(resend_send_key(conn, resend_headers, domain, resend_id))
 
     step("6. Sales page + HTTPS")
-    write_pages(args, domain, webroot)
+    write_pages(args, domain, webroot, buy_url)
     done("pages written")
     install_nginx(domain, nginx_config(domain, webroot, https=False))
     done("nginx site added")
     done(f"certificate {get_certificate(domain, webroot)}")
     install_nginx(domain, nginx_config(domain, webroot, https=True))
-    done("HTTPS on")
-    # Picks up .env changes (keys added after install.sh, test -> live).
+    done("HTTPS on, security headers on, requests rate limited")
     sudo("systemctl", "restart", "digital-product-kit")
-    done("checkout service restarted")
+    done("shop service restarted")
 
     step("7. Checking email sending")
     if status == "verified" or wait_for_resend(resend_id, resend_headers):
@@ -340,8 +422,9 @@ def main():
         print(f"  {DIM}Resend is still checking the records. Orders will email once it "
               f"shows 'verified' at resend.com/domains.{RESET}")
 
-    mode = "TEST mode, pay with 4242 4242 4242 4242" if "_test_" in ENV["STRIPE_SECRET_KEY"] else "LIVE"
-    print(f"\n{GREEN}{BOLD}Live: https://{domain}{RESET}  {DIM}({mode}){RESET}\n")
+    note = "TEST mode, pay with 4242 4242 4242 4242" if mode == "test" else "LIVE"
+    print(f"\n{GREEN}{BOLD}Live: https://{domain}{RESET}  {DIM}({note}){RESET}")
+    print(f"{DIM}Your keys were not saved on this server.{RESET}\n")
 
 
 if __name__ == "__main__":

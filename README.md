@@ -45,15 +45,17 @@ technical, so please follow these rules:
 
 1. Give me one step at a time. Tell me exactly what to click or type, and wait
    for me to say "done" before the next step.
-2. Never ask me to paste a password, API key or token into this chat. When a
-   key is needed, tell me which file to open on my server and where to paste
-   it myself.
+2. Never ask me to paste a password, API key or token into this chat.
+   new_product.py asks for keys in the server terminal and never saves them,
+   so I will run that command and type the keys in myself.
 3. Before anything that costs money (the server, buying the domain, turning on
    live payments), tell me the price and wait for my OK.
 4. Start in Stripe test mode. Only switch to real payments after I have done a
    test purchase that worked, start to finish.
 5. If something fails, ask me to paste the error message (never a key), then
    use the README's "If something goes wrong" section.
+6. Follow SECURITY.md in the repo. Don't turn off the firewall, fail2ban or
+   the SSH settings to fix a problem, and don't run anything as root.
 
 If you can run commands on my server yourself (for example Claude Code), you
 can run them for me, but still follow the rules above.
@@ -87,70 +89,63 @@ The server is a small computer that stays on all the time and runs your shop.
 
 > Tip: to paste into the console, right-click and choose Paste, or press Ctrl+Shift+V.
 
-### Step 2: Lock the server down and make your user
+### Step 2: Make your user
 
-Paste this block into the console and press Enter. It installs security updates, turns on a firewall that only allows web traffic and logins, and makes a user called `shop`.
+The shop should never run as `root` (the all-powerful user). Paste this to make a normal user called `shop`:
 
 ```
-apt update && DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt -y upgrade
-ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw --force enable
 adduser shop
 ```
 
 It asks you to pick a password for `shop`. Pick a strong one that doesn't contain the word "shop" (Ubuntu rejects those) and write it down. Then press Enter through the other questions (name, room number and so on).
 
-Then paste this to give `shop` admin rights and switch to it:
+Then give `shop` admin rights and switch to it:
 
 ```
 usermod -aG sudo shop
 su - shop
 ```
 
-From now on you're working as `shop`. The shop should never run as `root` (the all-powerful user), so the installer refuses to.
+From now on you're working as `shop`.
 
-### Step 3: Install the kit
+### Step 3: Lock the server down and install the kit
 
 ```
 git clone https://github.com/samalgrow/digital-product-kit.git
 cd digital-product-kit
+sudo ./harden.sh
+```
+
+When it asks for a password, type the `shop` password. Nothing shows while you type, which is normal. It asks you to confirm with `y`, then:
+
+- installs security updates, and turns on automatic ones
+- turns on a firewall that only allows web traffic and logins
+- bans anyone who keeps guessing passwords
+- switches off password logins over the internet
+
+From now on you log in with the **Console** button on DigitalOcean. If it asks which user, type `shop` (root logins are switched off). If the Console ever won't let you in, the **Recovery Console** under Access always works. [SECURITY.md](SECURITY.md) explains all of it, and how to add an SSH key if you prefer a terminal.
+
+Then install the kit:
+
+```
 ./install.sh
 ```
 
-When it asks for a password, type the `shop` password. Nothing shows while you type, which is normal. After a minute you'll see `Service running on port 8750`.
+It asks for the email where customer replies should go. After a minute you'll see `Service running on port 8750`.
 
 ### Step 4: Get your keys
 
-Keys are like passwords that let the kit use your accounts. Keep them secret. Anyone who has them can use your accounts.
+Keys are like passwords that let the kit use your accounts. **You don't save them anywhere on the server.** The command in Step 6 asks for them each time, uses them, and forgets them. Keep them in your password manager.
 
 | Key | Where to get it |
 | --- | --- |
-| **Stripe** | Sign up at [stripe.com](https://stripe.com). Open [dashboard.stripe.com/test/apikeys](https://dashboard.stripe.com/test/apikeys) and copy the **Secret key**. It starts with `sk_test_`. That's test mode: no real money moves. |
+| **Stripe** | Sign up at [stripe.com](https://stripe.com). Open [dashboard.stripe.com/test/apikeys](https://dashboard.stripe.com/test/apikeys) and copy the **Secret key**. It starts with `sk_test_`. That's test mode: no real money moves. (Safer: a restricted key, see [SECURITY.md](SECURITY.md).) |
 | **Resend** | Sign up at [resend.com](https://resend.com). Go to **API Keys**, click **Create API Key**, and pick **Full access**. It starts with `re_`. |
-| **GoDaddy** | Sign in at [godaddy.com](https://www.godaddy.com) and make sure a card is saved on your account (that's how the domain gets paid for). Then open [developer.godaddy.com/personal-access-token](https://developer.godaddy.com/personal-access-token) and create a token that can manage domains and DNS and register domains. |
-| **Your email** | A real inbox you check. Customer replies go here. |
+| **GoDaddy** | Sign in at [godaddy.com](https://www.godaddy.com) and make sure a card is saved on your account (that's how the domain gets paid for). Then open [developer.godaddy.com/personal-access-token](https://developer.godaddy.com/personal-access-token) and create a token that can manage domains and DNS and register domains. Give it a short expiry. |
 
 Already have your domain on **Cloudflare** instead? Make a token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) with the "Edit zone DNS" template and use that instead of GoDaddy. The kit can't buy domains through Cloudflare, only use ones you already have there.
 
-### Step 5: Put your keys on the server
-
-```
-nano .env
-```
-
-A text editor opens. Paste each key right after its `=` sign, with no spaces:
-
-```
-STRIPE_SECRET_KEY=sk_test_51AbC...
-RESEND_API_KEY=re_AbC...
-SUPPORT_EMAIL=you@gmail.com
-GODADDY_TOKEN=paste-your-godaddy-token-here
-```
-
-Save and close: press **Ctrl+O**, then **Enter**, then **Ctrl+X**.
-
-This file only lives on your server and only the `shop` user can read it. Never send it to anyone, post it, or paste it into a chat.
-
-### Step 6: Put your file on the server
+### Step 5: Put your file on the server
 
 The easiest way is a download link. Upload your PDF to Dropbox, copy its share link, change the `dl=0` at the end to `dl=1`, and run:
 
@@ -169,10 +164,10 @@ On your own computer, open Terminal (Mac) or PowerShell (Windows) and run:
 scp handbook.pdf shop@YOUR_SERVER_IP:~/digital-product-kit/
 ```
 
-`YOUR_SERVER_IP` is the number on your Droplet's page, like `164.90.12.34`. It asks for the `shop` password.
+`YOUR_SERVER_IP` is the number on your Droplet's page, like `164.90.12.34`. This needs an SSH key, because `harden.sh` switched off password logins. [SECURITY.md](SECURITY.md) shows how to add one in 2 minutes.
 </details>
 
-### Step 7: Run the command
+### Step 6: Run the command
 
 Change the words in quotes to your own, then paste it:
 
@@ -196,6 +191,16 @@ Change the words in quotes to your own, then paste it:
 | `--buy` | Buy the domain if you don't own it yet |
 | `--currency` | `usd` unless you add this, e.g. `--currency gbp` |
 
+First it asks for your keys, one at a time. Paste each one (right-click, or Ctrl+Shift+V) and press Enter. Nothing shows on screen while you paste, which is on purpose.
+
+```
+  Stripe secret key (sk_...):
+  Resend API key, full access (re_...):
+  GoDaddy token (or press Enter to use Cloudflare):
+```
+
+Later it may ask for your `shop` password too. That's for setting up the website and the HTTPS certificate.
+
 If the domain isn't yours yet, it shows the price and asks before buying:
 
 ```
@@ -210,11 +215,12 @@ Then it works through the rest by itself. It finishes with:
 
 ```
 Live: https://houseplanthandbook.com  (TEST mode, pay with 4242 4242 4242 4242)
+Your keys were not saved on this server.
 ```
 
 A brand new domain can take a few minutes to start working everywhere. If a step fails because of that, wait 10 minutes and run the exact same command again. It picks up where it left off and never buys anything twice.
 
-### Step 8: Test it
+### Step 7: Test it
 
 1. Open your domain in your browser and click **Buy now**.
 2. Pay with the test card `4242 4242 4242 4242`, any future date, any 3 numbers for the CVC, and **your own email**.
@@ -222,13 +228,13 @@ A brand new domain can take a few minutes to start working everywhere. If a step
 
 No real money moves in test mode.
 
-### Step 9: Start taking real money
+### Step 8: Start taking real money
 
 1. In Stripe, finish setting up your account (business details and a bank account for payouts).
 2. Turn off test mode and copy your live **Secret key** from [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys). It starts with `sk_live_`.
-3. Run `nano .env`, replace the `sk_test_` key with the `sk_live_` one, and save (Ctrl+O, Enter, Ctrl+X).
-4. Run your Step 7 command again (you can leave off `--buy`).
-5. Buy your own product once with a real card, then refund yourself in Stripe.
+3. Run your Step 6 command again (you can leave off `--buy`) and paste the `sk_live_` key when it asks for the Stripe key.
+4. Buy your own product once with a real card, then refund yourself in Stripe.
+5. Go through the checklist at the top of [SECURITY.md](SECURITY.md). It takes 10 minutes.
 
 That's it. You're selling.
 
@@ -236,15 +242,17 @@ That's it. You're selling.
 
 ## Everyday things
 
-**Change the price, text, cover or files:** run your Step 7 command again with the new values. It updates what's there and never makes duplicates.
+**Change the price, text, cover or files:** run your Step 6 command again with the new values. It updates what's there and never makes duplicates.
 
 **Add another product:** run the command again with a new `--name` and a new `--domain`. The free Resend plan covers 1 domain, so a second product needs Resend's paid plan.
 
-**Make the page look different:** the sales page is `templates/index.html`, one plain HTML file. Edit it, then run your Step 7 command again.
+**Make the page look different:** the sales page is `templates/index.html`, one plain HTML file. Edit it, then run your Step 6 command again.
 
 **See your sales:** in your Stripe dashboard, like any other Stripe payment.
 
 **Update the kit:** `cd ~/digital-product-kit && git pull && ./install.sh`
+
+**Back up your orders:** everything is in the `data` folder. See [SECURITY.md](SECURITY.md) for a one-line backup.
 
 ## If something goes wrong
 
@@ -252,44 +260,41 @@ That's it. You're selling.
 | --- | --- |
 | `... is not in your GoDaddy account` | Add `--buy` to the command, or check you typed the domain right. |
 | `... is taken` | Someone owns that domain. Pick another name. |
-| `Missing in .env: ...` | Open `nano .env` and fill in the key it names. |
+| `Set SUPPORT_EMAIL in .env first` | Run `nano .env`, put your email after `SUPPORT_EMAIL=`, save with Ctrl+O, Enter, Ctrl+X. |
+| `Remove these from .env` | You have keys saved in `.env` from an older version. Delete those lines with `nano .env`. The command asks for keys instead. |
+| `That doesn't look like a ...` | The key you pasted is incomplete or the wrong one. Copy it again. |
 | `certbot failed` | The new domain hasn't spread yet. Wait 10 to 30 minutes and run the command again. |
-| `HTTP 401` or `HTTP 403` | A key is wrong or missing a permission. Make a new one and paste it into `.env`. |
+| `HTTP 401` or `HTTP 403` | A key is wrong or missing a permission. Make a new one and run the command again. |
 | `Resend is still checking the records` | Normal for a new domain. Emails start once it says Verified at [resend.com/domains](https://resend.com/domains), usually within an hour. |
-| The Buy button shows an error | Look at the last lines of the service log: `sudo journalctl -u digital-product-kit -n 30` |
+| Paid, but no download shows up | Look at the last lines of the service log: `sudo journalctl -u digital-product-kit -n 30` |
+| Can't log in over SSH any more | That's `harden.sh` switching off password logins. Use the **Console** button on DigitalOcean, or add an SSH key ([SECURITY.md](SECURITY.md)). |
 | The email never arrives | Check spam, and check [resend.com/emails](https://resend.com/emails) to see if it was sent. |
 
-When you ask anyone for help (a person or an AI), paste the error message but **never** your `.env` file or any key.
+When you ask anyone for help (a person or an AI), paste the error message but **never** any key.
 
 ## Security
 
-What the kit does for you:
+Read [SECURITY.md](SECURITY.md). It covers your accounts, every key, the server, using an AI on the server, backups, and exactly what to do if something goes wrong.
 
-- Your keys live only in `.env` on your server. Only the `shop` user can read it, and it's never uploaded to GitHub.
-- Buyer emails and orders are stored in `data/`, which only `shop` can read.
-- Download links are long random codes that nobody can guess, and they stop working after a year.
-- Your files aren't on the public website. Only someone with a paid download link can get them.
-- Payments are checked with Stripe's signature, so nobody can fake a purchase to get a file.
-- A purchase only counts once the money has actually arrived.
-- The shop runs as a normal user, locked down, and only nginx can reach it.
+The short version of what the kit does:
 
-What you should do:
-
-- Never share your keys or post screenshots of `.env`. If a key leaks, delete it where you made it (Stripe, Resend or GoDaddy), make a new one, and paste the new one into `.env`.
-- Treat the GoDaddy token like a card, because it can buy domains. You can delete it after setup and make a new one next time you need it.
-- Keep the firewall from Step 2 on. Ubuntu installs security updates by itself.
+- **No powerful keys on the server.** Stripe, GoDaddy and full Resend keys are typed in during setup and never saved. The running shop holds no Stripe key at all, only a webhook secret and a Resend key that can only send email from your domain.
+- **The server is locked down** by `harden.sh`: firewall, fail2ban, automatic security updates, no root login, no password logins.
+- **Payments can't be faked**, and a file is only sent once the money has actually arrived.
+- **Download links are random and unguessable**, and your files aren't on the public website.
+- **Buyer emails and orders** sit in `data/`, which only `shop` can read.
 
 ## How it works
 
 ```
 buyer  ->  yourdomain.com         the sales page (nginx)
-       ->  Buy now                Stripe Checkout
+       ->  Buy now                Stripe Payment Link (Stripe's own checkout page)
        ->  paid                   Stripe tells your server, it saves the order
                                   and emails the download link (Resend)
        ->  thank-you page         shows the download button straight away
 ```
 
-The server side is about 200 lines of Python in `kit/server.py`, plus `new_product.py`, which does the setup. Orders are kept in a small SQLite database in `data/kit.db`.
+The server only receives Stripe's "paid" message and hands out downloads. It's about 180 lines of Python in `kit/server.py`, plus `new_product.py`, which does the setup. Orders are kept in a small SQLite database in `data/kit.db`.
 
 ---
 

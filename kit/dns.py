@@ -4,15 +4,15 @@ import time
 import urllib.parse
 import uuid
 
-from kit.common import ENV, HttpError, http
+from kit.common import HttpError, http
 
 
 class GoDaddy:
     API = "https://api.godaddy.com"
 
-    def __init__(self, domain):
+    def __init__(self, domain, token):
         self.domain = domain
-        self.headers = {"Authorization": f"Bearer {ENV['GODADDY_TOKEN']}"}
+        self.headers = {"Authorization": f"Bearer {token}"}
 
     def owns(self):
         try:
@@ -76,9 +76,9 @@ class GoDaddy:
 class Cloudflare:
     API = "https://api.cloudflare.com/client/v4"
 
-    def __init__(self, domain):
+    def __init__(self, domain, token):
         self.domain = domain
-        self.headers = {"Authorization": f"Bearer {ENV['CLOUDFLARE_API_TOKEN']}"}
+        self.headers = {"Authorization": f"Bearer {token}"}
         zones = http("GET", f"{self.API}/zones?name={domain}", headers=self.headers)["result"]
         if not zones:
             raise SystemExit(f"{domain} is not in this Cloudflare account.")
@@ -98,9 +98,9 @@ class Cloudflare:
             http("POST", base, headers=self.headers, json_body=record)
 
 
-def provider_for(domain):
-    if ENV.get("CLOUDFLARE_API_TOKEN"):
-        return "Cloudflare", Cloudflare(domain)
-    if ENV.get("GODADDY_TOKEN"):
-        return "GoDaddy", GoDaddy(domain)
-    raise SystemExit("Add GoDaddy or Cloudflare keys to .env (see .env.example).")
+def provider_for(domain, godaddy_token=None, cloudflare_token=None):
+    if godaddy_token:
+        return "GoDaddy", GoDaddy(domain, godaddy_token)
+    if cloudflare_token:
+        return "Cloudflare", Cloudflare(domain, cloudflare_token)
+    raise SystemExit("A GoDaddy or Cloudflare token is needed to set up the domain.")

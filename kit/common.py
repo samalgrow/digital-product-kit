@@ -1,4 +1,7 @@
-"""Shared bits: settings from .env, a tiny HTTP helper, and the SQLite store."""
+"""Shared bits: settings from .env, a tiny HTTP helper, and the SQLite store.
+
+.env only holds harmless settings. Keys that can change anything (Stripe, GoDaddy,
+full Resend) are typed in during setup and never saved."""
 
 import json
 import sqlite3
@@ -56,13 +59,12 @@ def http(method, url, headers=None, json_body=None, form=None, timeout=30):
     return json.loads(raw) if raw.strip() else {}
 
 
-def stripe(method, path, form=None):
+def stripe(key, method, path, form=None):
     url = "https://api.stripe.com" + path
     if method == "GET" and form:
         url += "?" + urllib.parse.urlencode(form)
         form = None
-    return http(method, url, headers={"Authorization": f"Bearer {ENV['STRIPE_SECRET_KEY']}"},
-                form=form)
+    return http(method, url, headers={"Authorization": f"Bearer {key}"}, form=form)
 
 
 SCHEMA = """
@@ -93,7 +95,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 
 def db():
-    # Orders (buyer emails) and the webhook secret live here: owner-only.
+    # Orders (buyer emails), webhook secrets and send-only email keys live here: owner-only.
     DATA_DIR.mkdir(mode=0o700, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row

@@ -1,13 +1,14 @@
 """The small web service that sits behind every product domain.
 
-  POST /checkout                 start a Stripe Checkout for a product, redirect to it
   POST /webhook                  Stripe says "paid" -> save the order, email the link
   GET  /order-link?session_id=   thank-you page asks for the buyer's download link
   GET  /downloads/<token>        the buyer's download page
   GET  /downloads/<token>/<n>    one file
   GET  /health                   {"ok": true}
 
-nginx serves the sales page itself and forwards these paths here.
+nginx serves the sales page itself and forwards these paths here. The Buy button is a
+Stripe Payment Link, so this service holds no Stripe key at all: only the webhook
+secret, which can do nothing except check that a message really came from Stripe.
 """
 
 import hashlib
@@ -19,39 +20,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from html import escape
 
-from flask import Flask, abort, redirect, request, send_from_directory
+from flask import Flask, abort, request, send_from_directory
 
-from kit.common import ENV, FILES_DIR, db, get_setting, http, stripe
+from kit.common import ENV, FILES_DIR, db, get_setting, http
 
 app = Flask(__name__)
-
-
-def stripe_mode():
-    return "test" if "_test_" in ENV.get("STRIPE_SECRET_KEY", "") else "live"
-
-
-def product_for_host(conn):
-    host = request.host.split(":")[0].lower().removeprefix("www.")
-    return conn.execute("SELECT * FROM products WHERE domain = ?", (host,)).fetchone()
-
-
-@app.post("/checkout")
-def checkout():
-    with db() as conn:
-        product = product_for_host(conn)
-    if not product:
-        abort(404)
-    base = f"https://{product['domain']}"
-    session = stripe("POST", "/v1/checkout/sessions", {
-        "mode": "payment",
-        "line_items[0][price]": product["price_id"],
-        "line_items[0][quantity]": "1",
-        "metadata[product_slug]": product["slug"],
-        "success_url": base + "/thank-you.html?session_id={CHECKOUT_SESSION_ID}",
-        "cancel_url": base + "/",
-        "allow_promotion_codes": "true",
-    })
-    return redirect(session["url"], code=303)
 
 
 def signature_ok(payload, header, secret):
@@ -70,8 +43,11 @@ def signature_ok(payload, header, secret):
 
 def send_order_email(product, email, token):
     link = f"https://{product['domain']}/downloads/{token}"
+    # A Resend key that can only send, and only from this product's domain.
+    with db() as conn:
+        key = get_setting(conn, f"resend_send_key:{product['domain']}")
     http("POST", "https://api.resend.com/emails",
-         headers={"Authorization": f"Bearer {ENV['RESEND_API_KEY']}"},
+         headers={"Authorization": f"Bearer {key}"},
          json_body={
              "from": f"{product['seller_name']} <orders@{product['domain']}>",
              "to": [email],
@@ -91,8 +67,9 @@ def send_order_email(product, email, token):
 def webhook():
     payload = request.get_data()
     with db() as conn:
-        secret = get_setting(conn, f"webhook_secret_{stripe_mode()}")
-    if not signature_ok(payload, request.headers.get("Stripe-Signature"), secret):
+        secrets = [get_setting(conn, f"webhook_secret_{m}") for m in ("test", "live")]
+    header = request.headers.get("Stripe-Signature")
+    if not any(signature_ok(payload, header, s) for s in secrets):
         abort(400)
     event = json.loads(payload)
     if event.get("type") not in ("checkout.session.completed",
