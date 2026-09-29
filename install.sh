@@ -22,6 +22,12 @@ echo "Installing nginx, certbot and Python..."
 sudo apt-get update -qq >/dev/null
 sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y -qq nginx certbot python3-venv sqlite3 >/dev/null 2>&1
 
+# The stock "Welcome to nginx" page answers anyone who visits the server's bare IP.
+if [ -L /etc/nginx/sites-enabled/default ]; then
+  sudo rm /etc/nginx/sites-enabled/default
+  sudo systemctl reload nginx
+fi
+
 echo "Installing the web service..."
 python3 -m venv .venv
 .venv/bin/pip install -q -r requirements.txt
