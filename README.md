@@ -199,6 +199,8 @@ First it asks for your keys, one at a time. Paste each one (right-click, or Ctrl
   GoDaddy token (or press Enter to use Cloudflare):
 ```
 
+Later it may ask for your `shop` password too. That's for setting up the website and the HTTPS certificate.
+
 If the domain isn't yours yet, it shows the price and asks before buying:
 
 ```
