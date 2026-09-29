@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<meta name="description" content="{{DESCRIPTION}}">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         color: #111; background: #fafafa; line-height: 1.55; }
+  main { max-width: 620px; margin: 0 auto; padding: 72px 24px 48px; text-align: center; }
+  .cover { width: 240px; max-width: 70%; border-radius: 6px;
+           box-shadow: 0 12px 32px rgba(0,0,0,.15); margin-bottom: 36px; }
+  h1 { font-size: clamp(30px, 6vw, 44px); line-height: 1.15; margin: 0 0 16px; }
+  .description { font-size: 19px; color: #444; margin: 0 0 32px; }
+  .price { font-size: 28px; font-weight: 700; margin-bottom: 20px; }
+  button { font: inherit; font-size: 18px; font-weight: 600; padding: 16px 44px;
+           border: 0; border-radius: 8px; background: #111; color: #fff; cursor: pointer; }
+  button:hover { background: #333; }
+  .small { font-size: 14px; color: #777; margin-top: 16px; }
+  @media (min-width: 860px) {
+    main { max-width: 960px; display: grid; grid-template-columns: 300px 1fr; gap: 64px;
+           align-items: center; text-align: left; padding-top: 96px; }
+    .cover { width: 100%; max-width: none; margin: 0; }
+    .info { grid-column: 2; }
+    main:not(:has(.cover)) .info { grid-column: 1 / -1; text-align: center; }
+  }
+  footer { text-align: center; font-size: 13px; color: #999; padding: 32px 24px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  {{COVER}}
+  <div class="info">
+  <h1>{{TITLE}}</h1>
+  <p class="description">{{DESCRIPTION}}</p>
+  <div class="price">{{PRICE}}</div>
+  <form method="post" action="/checkout">
+    <button type="submit">Buy now</button>
+  </form>
+  <p class="small">Instant download. The link is emailed to you straight after checkout.</p>
+  </div>
+</main>
+<footer>
+  &copy; {{SELLER}} &middot; Questions? <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>
+  <br>Made with <a href="https://github.com/samalgrow/digital-product-kit">Digital Product Kit</a>
+</footer>
+</body>
+</html>
