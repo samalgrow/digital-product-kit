@@ -15,9 +15,9 @@
   h1 { font-size: clamp(30px, 6vw, 44px); line-height: 1.15; margin: 0 0 16px; }
   .description { font-size: 19px; color: #444; margin: 0 0 32px; }
   .price { font-size: 28px; font-weight: 700; margin-bottom: 20px; }
-  button { font: inherit; font-size: 18px; font-weight: 600; padding: 16px 44px;
-           border: 0; border-radius: 8px; background: #111; color: #fff; cursor: pointer; }
-  button:hover { background: #333; }
+  a.buy { display: inline-block; font-size: 18px; font-weight: 600; padding: 16px 44px;
+          border-radius: 8px; background: #111; color: #fff; text-decoration: none; }
+  a.buy:hover { background: #333; }
   .small { font-size: 14px; color: #777; margin-top: 16px; }
   @media (min-width: 860px) {
     main { max-width: 960px; display: grid; grid-template-columns: 300px 1fr; gap: 64px;
@@ -37,9 +37,7 @@
   <h1>{{TITLE}}</h1>
   <p class="description">{{DESCRIPTION}}</p>
   <div class="price">{{PRICE}}</div>
-  <form method="post" action="/checkout">
-    <button type="submit">Buy now</button>
-  </form>
+  <a class="buy" href="{{BUY_URL}}">Buy now</a>
   <p class="small">Instant download. The link is emailed to you straight after checkout.</p>
   </div>
 </main>
