@@ -9,14 +9,15 @@ What it does:
   2. Creates the product and price in Stripe
   3. Points the domain at this server (GoDaddy or Cloudflare DNS)
   4. Sets up order email from orders@<domain> with Resend
-  5. Writes the sales page and thank-you page
+  5. Writes the sales page and thank-you page (the kit's own, or yours with --page)
   6. Configures nginx and gets an HTTPS certificate
 Safe to run again: it updates what exists instead of making duplicates.
 
 It asks for your Stripe, Resend and GoDaddy (or Cloudflare) keys each time and never
 saves them. What stays on the server can't touch your money, your domain or your
 email account: a Stripe webhook secret and a Resend key that can only send email
-from this one domain.
+from this one domain. With --embedded (the pay box opens on your page), it also keeps
+a restricted Stripe key that can only start a checkout.
 """
 
 import argparse
@@ -52,7 +53,8 @@ def sudo(*cmd, stdin=None):
                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
 
-SETUP_KEYS = ("STRIPE_SECRET_KEY", "RESEND_API_KEY", "GODADDY_TOKEN", "CLOUDFLARE_API_TOKEN")
+SETUP_KEYS = ("STRIPE_SECRET_KEY", "STRIPE_CHECKOUT_KEY", "RESEND_API_KEY", "GODADDY_TOKEN",
+              "CLOUDFLARE_API_TOKEN")
 
 
 def check_env():
@@ -136,6 +138,19 @@ def stripe_webhook(key, conn, domain, mode):
     return f"https://{domain}/webhook"
 
 
+def stripe_checkout_key(conn, key, domain, price_id):
+    """Embedded checkout: the server keeps a key that can only start checkouts. Proves the
+    key works by opening a checkout and closing it straight away."""
+    session = stripe(key, "POST", "/v1/checkout/sessions", {
+        "mode": "payment", "ui_mode": "embedded_page",
+        "line_items[0][price]": price_id, "line_items[0][quantity]": "1",
+        "return_url": f"https://{domain}/thank-you.html?session_id={{CHECKOUT_SESSION_ID}}",
+    })
+    stripe(key, "POST", f"/v1/checkout/sessions/{session['id']}/expire")
+    set_setting(conn, f"stripe_checkout_key:{domain}", key)
+    return "restricted checkout key works and is saved"
+
+
 # ------------------------------------------------------------------ domain, DNS + email
 
 
@@ -209,7 +224,10 @@ def wait_for_resend(domain_id, headers, minutes=5):
 # ------------------------------------------------------------------ web
 
 
-def write_pages(args, domain, webroot, buy_url):
+CHECKOUT_TAG = '<script src="/checkout.js" defer></script>'
+
+
+def write_pages(args, domain, webroot, buy_url, publishable_key=None):
     fill = {
         "{{BUY_URL}}": escape(buy_url),
         "{{TITLE}}": escape(args.name),
@@ -221,18 +239,54 @@ def write_pages(args, domain, webroot, buy_url):
                      if args.cover else "",
     }
     sudo("mkdir", "-p", webroot)
-    for name in ("index.html", "thank-you.html"):
-        html = (ROOT / "templates" / name).read_text()
+    page = Path(args.page) if args.page else None
+    if page:
+        # Your own page: copy the whole folder, then fill in the same {{...}} slots.
+        sudo("cp", "-r", f"{page}/.", webroot)
+    elif args.cover:
+        sudo("cp", args.cover, f"{webroot}/cover{Path(args.cover).suffix}")
+    names = sorted({"index.html", "thank-you.html"} |
+                   ({p.relative_to(page).as_posix() for p in page.rglob("*.html")} if page else set()))
+    for name in names:
+        src = page / name if page and (page / name).is_file() else ROOT / "templates" / name
+        html = src.read_text()
         for key, val in fill.items():
             html = html.replace(key, val)
+        if publishable_key and name == "index.html" and CHECKOUT_TAG not in html:
+            html = html.replace("</body>", f"{CHECKOUT_TAG}\n</body>", 1)
         sudo("tee", f"{webroot}/{name}", stdin=html.encode())
-    if args.cover:
-        sudo("cp", args.cover, f"{webroot}/cover{Path(args.cover).suffix}")
+    if publishable_key:
+        js = (ROOT / "templates" / "checkout.js").read_text()
+        sudo("tee", f"{webroot}/checkout.js",
+             stdin=js.replace("{{PUBLISHABLE_KEY}}", publishable_key).encode())
 
 
-def nginx_config(domain, webroot, https):
+# The pay box loads from Stripe, so embedded checkout needs these on top of 'self'.
+CSP_STRIPE = {
+    "script-src": "https://js.stripe.com https://*.js.stripe.com https://checkout.stripe.com",
+    "frame-src": "https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com "
+                 "https://checkout.stripe.com https://link.com https://*.link.com",
+    "connect-src": "https://api.stripe.com https://checkout.stripe.com https://link.com "
+                   "https://*.link.com",
+    "img-src": "https://*.stripe.com https://*.link.com",
+}
+
+
+def content_security_policy(embedded):
+    policy = {"default-src": "'self'", "img-src": "'self' data:",
+              "style-src": "'self' 'unsafe-inline'", "script-src": "'self' 'unsafe-inline'",
+              "frame-ancestors": "'none'", "base-uri": "'self'", "form-action": "'self'"}
+    if embedded:
+        policy["connect-src"] = "'self'"
+        policy["frame-src"] = "'self'"
+        for name, extra in CSP_STRIPE.items():
+            policy[name] += " " + extra
+    return "; ".join(f"{k} {v}" for k, v in policy.items())
+
+
+def nginx_config(domain, webroot, https, embedded=False):
     proxy = f"""
-    location ~ ^/(webhook|order-link|downloads/) {{
+    location ~ ^/(webhook|order-link|downloads/|checkout-session$|buy$) {{
         limit_req zone=dpk burst=20 nodelay;
         proxy_pass http://127.0.0.1:{PORT};
         proxy_set_header Host $host;
@@ -275,7 +329,7 @@ server {{
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;
     add_header Referrer-Policy same-origin always;
-    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+    add_header Content-Security-Policy "{content_security_policy(embedded)}" always;
     root {webroot};
 {proxy}
 }}
@@ -331,6 +385,10 @@ def main():
     ap.add_argument("--seller", required=True, help="your name, shown on the page and emails")
     ap.add_argument("--description", default="", help="one or two lines for the sales page")
     ap.add_argument("--cover", help="cover image for the sales page")
+    ap.add_argument("--page", help="folder with your own index.html (and thank-you.html) "
+                                   "to use instead of the kit's page")
+    ap.add_argument("--embedded", action="store_true",
+                    help="open the pay box on your page instead of on Stripe's site")
     ap.add_argument("--currency", default="usd")
     ap.add_argument("--server-ip", help="defaults to this server's public IP")
     ap.add_argument("--buy", action="store_true",
@@ -348,6 +406,8 @@ def main():
     for f in args.files + ([args.cover] if args.cover else []):
         if not Path(f).is_file():
             sys.exit(f"Not a file: {f}")
+    if args.page and not (Path(args.page) / "index.html").is_file():
+        sys.exit(f"No index.html in {args.page}")
 
     print(f"{BOLD}Setting up {args.name} on {domain}{RESET}")
     print(f"{DIM}Paste each key when asked (right-click or Ctrl+Shift+V). It stays hidden "
@@ -358,6 +418,16 @@ def main():
                       optional=True)
     cloudflare = "" if godaddy else ask_key("CLOUDFLARE_API_TOKEN", "Cloudflare token")
     mode = "test" if "_test_" in stripe_key else "live"
+    checkout_key = publishable_key = None
+    if args.embedded:
+        checkout_key = ask_key("STRIPE_CHECKOUT_KEY",
+                               "Stripe restricted key for checkout only (rk_...)", ("rk_", "sk_test_"))
+        publishable_key = ask_key("STRIPE_PUBLISHABLE_KEY", "Stripe publishable key (pk_...)",
+                                  ("pk_",))
+        for k in (checkout_key, publishable_key):
+            if ("_test_" in k) != (mode == "test"):
+                sys.exit("Mix of test and live Stripe keys. Use all test or all live. "
+                         "Nothing was changed.")
 
     step("1. Domain")
     provider_name, dns = provider_for(domain, godaddy, cloudflare)
@@ -380,6 +450,11 @@ def main():
     done(f"checkout link {buy_url}")
     with db() as conn:
         done(f"webhook {stripe_webhook(stripe_key, conn, domain, mode)}")
+        if checkout_key:
+            done(stripe_checkout_key(conn, checkout_key, domain, price_id))
+            buy_url = "/buy"
+        else:
+            conn.execute("DELETE FROM settings WHERE key = ?", (f"stripe_checkout_key:{domain}",))
         conn.execute(
             "INSERT INTO products (slug, title, domain, seller_name, price_id, files) "
             "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET title = excluded.title, "
@@ -405,12 +480,13 @@ def main():
         done(resend_send_key(conn, resend_headers, domain, resend_id))
 
     step("6. Sales page + HTTPS")
-    write_pages(args, domain, webroot, buy_url)
-    done("pages written")
-    install_nginx(domain, nginx_config(domain, webroot, https=False))
+    write_pages(args, domain, webroot, buy_url, publishable_key)
+    done(f"pages written ({'your page' if args.page else 'kit page'}, "
+         f"{'pay box on the page' if checkout_key else 'Stripe checkout link'})")
+    install_nginx(domain, nginx_config(domain, webroot, https=False, embedded=bool(checkout_key)))
     done("nginx site added")
     done(f"certificate {get_certificate(domain, webroot)}")
-    install_nginx(domain, nginx_config(domain, webroot, https=True))
+    install_nginx(domain, nginx_config(domain, webroot, https=True, embedded=bool(checkout_key)))
     done("HTTPS on, security headers on, requests rate limited")
     sudo("systemctl", "restart", "digital-product-kit")
     done("shop service restarted")

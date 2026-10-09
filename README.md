@@ -189,6 +189,8 @@ Change the words in quotes to your own, then paste it:
 | `--seller` | Your name. It shows on the page and in the order email. |
 | `--description` | A line or two under the title (optional) |
 | `--buy` | Buy the domain if you don't own it yet |
+| `--embedded` | Open the pay box on your own page instead of sending buyers to Stripe's site (optional, see below) |
+| `--page` | A folder with your own `index.html` to use instead of the kit's page (optional, see below) |
 | `--currency` | `usd` unless you add this, e.g. `--currency gbp` |
 
 First it asks for your keys, one at a time. Paste each one (right-click, or Ctrl+Shift+V) and press Enter. Nothing shows on screen while you paste, which is on purpose.
@@ -248,6 +250,15 @@ That's it. You're selling.
 
 **Make the page look different:** the sales page is `templates/index.html`, one plain HTML file. Edit it, then run your Step 6 command again.
 
+**Use your own sales page:** put `index.html` (and any images, fonts and a `thank-you.html`) in one folder and add `--page that-folder`. Every buy button should be `href="{{BUY_URL}}"`; the kit fills in the real link. It also fills in `{{TITLE}}`, `{{PRICE}}`, `{{SELLER}}` and `{{SUPPORT_EMAIL}}`. Without your own `thank-you.html` the kit's one is used. Everything the page loads has to be in that folder: the page's security settings block files from other websites.
+
+**Pay on the page (embedded checkout):** add `--embedded` and the Stripe pay box pops up on your page instead of sending buyers to another site. Every extra page is another chance they don't buy. It asks for two more things:
+
+1. A **restricted key** that can only start a checkout. At [dashboard.stripe.com/test/apikeys](https://dashboard.stripe.com/test/apikeys) click **Create restricted key**, name it after your domain, set **Checkout Sessions** to **Write** and leave everything else on None. It starts with `rk_test_` (or `rk_live_` once you go live). The shop keeps this one, because it has to start a checkout each time someone clicks Buy. It can't refund, read customers or move money.
+2. Your **publishable key** from the same page. It starts with `pk_test_` and isn't secret: it goes in the page.
+
+Use test keys together and live keys together. To go back to Stripe's own page, run the command again without `--embedded`.
+
 **See your sales:** in your Stripe dashboard, like any other Stripe payment.
 
 **Update the kit:** `cd ~/digital-product-kit && git pull && ./install.sh`
@@ -278,7 +289,7 @@ Read [SECURITY.md](SECURITY.md). It covers your accounts, every key, the server,
 
 The short version of what the kit does:
 
-- **No powerful keys on the server.** Stripe, GoDaddy and full Resend keys are typed in during setup and never saved. The running shop holds no Stripe key at all, only a webhook secret and a Resend key that can only send email from your domain.
+- **No powerful keys on the server.** Stripe, GoDaddy and full Resend keys are typed in during setup and never saved. The running shop holds no Stripe key at all, only a webhook secret and a Resend key that can only send email from your domain. (With `--embedded` it also holds a restricted key that can only start a checkout.)
 - **The server is locked down** by `harden.sh`: firewall, fail2ban, automatic security updates, no root login, no password logins.
 - **Payments can't be faked**, and a file is only sent once the money has actually arrived.
 - **Download links are random and unguessable**, and your files aren't on the public website.
@@ -288,7 +299,8 @@ The short version of what the kit does:
 
 ```
 buyer  ->  yourdomain.com         the sales page (nginx)
-       ->  Buy now                Stripe Payment Link (Stripe's own checkout page)
+       ->  Buy now                Stripe Payment Link (Stripe's own checkout page),
+                                  or with --embedded the pay box opens on your page
        ->  paid                   Stripe tells your server, it saves the order
                                   and emails the download link (Resend)
        ->  thank-you page         shows the download button straight away
