@@ -51,10 +51,11 @@ A key is a password for a program. Anyone holding one can do whatever that key i
 | --- | --- | --- |
 | Stripe webhook secret | Only check that a message came from Stripe. It can't read, charge, refund or move anything. | Low. Could be used to fake a purchase message to your own server and get a free download. |
 | Resend send-only key | Send email from `orders@yourdomain.com` only. It can't read your emails, see other domains or change settings. | Medium. Could send fake emails from your domain until you delete it. |
+| Stripe restricted checkout key (only with `--embedded`) | Start a checkout for your own products. It can't refund, read customers, change products or move money. | Low. Could open checkout pages you didn't ask for. Delete it in Stripe and run the command again with a new one. |
 
 The `data` folder can only be opened by the `shop` user. The shop service itself runs locked down: it can't change system files, can only write to `data`, and can only be reached through nginx.
 
-**The kit keeps no Stripe API key on the server at all.** The Buy button is a Stripe Payment Link made during setup, so the running shop never needs to talk to Stripe.
+**By default the kit keeps no Stripe API key on the server at all.** The Buy button is a Stripe Payment Link made during setup, so the running shop never needs to talk to Stripe. With `--embedded` the pay box opens on your page, which needs the shop to start each checkout itself, so it keeps a restricted key with **Checkout Sessions: Write** and nothing else. The kit refuses a full live secret key (`sk_live_`) for this.
 
 ### The keys you type in during setup
 
@@ -144,7 +145,7 @@ What the kit already does:
 - **Your files aren't on the public website.** Only the download links can fetch them.
 - **Requests are rate limited** to 10 a second per visitor, so nobody can hammer the downloads or the webhook.
 - **The pages send security headers:** HTTPS only, no embedding in other sites, and scripts only from your own domain.
-- **No Stripe key on the server**, and email keys that can only send from one domain.
+- **No Stripe key on the server** (or, with `--embedded`, one that can only start a checkout), and email keys that can only send from one domain.
 
 Things to know:
 

@@ -4,11 +4,14 @@
   GET  /order-link?session_id=   thank-you page asks for the buyer's download link
   GET  /downloads/<token>        the buyer's download page
   GET  /downloads/<token>/<n>    one file
+  POST /checkout-session         embedded checkout: the pay box on the page asks for a session
+  GET  /buy                      embedded checkout without JavaScript: off to Stripe's page
   GET  /health                   {"ok": true}
 
-nginx serves the sales page itself and forwards these paths here. The Buy button is a
-Stripe Payment Link, so this service holds no Stripe key at all: only the webhook
-secret, which can do nothing except check that a message really came from Stripe.
+nginx serves the sales page itself and forwards these paths here. By default the Buy
+button is a Stripe Payment Link, so this service holds no Stripe key at all: only the
+webhook secret, which can do nothing except check that a message really came from Stripe.
+With --embedded it also holds a restricted key that can only create checkout sessions.
 """
 
 import hashlib
@@ -20,9 +23,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from html import escape
 
-from flask import Flask, abort, request, send_from_directory
+from flask import Flask, abort, redirect, request, send_from_directory
 
-from kit.common import ENV, FILES_DIR, db, get_setting, http
+from kit.common import ENV, FILES_DIR, db, get_setting, http, stripe
 
 app = Flask(__name__)
 
@@ -179,6 +182,41 @@ def download_file(token, n):
         conn.execute("UPDATE orders SET downloads = downloads + 1 WHERE token = ?", (token,))
     # The file name comes only from the database, never from the URL.
     return send_from_directory(FILES_DIR / order["slug"], files[n], as_attachment=True)
+
+
+def checkout_session(embedded):
+    """A Checkout Session for the product sold on this domain."""
+    domain = request.host.split(":")[0].lower().removeprefix("www.")
+    with db() as conn:
+        product = conn.execute("SELECT * FROM products WHERE domain = ? "
+                               "ORDER BY created_at DESC", (domain,)).fetchone()
+        key = get_setting(conn, f"stripe_checkout_key:{domain}")
+    if not product or not key:
+        abort(404)
+    form = {
+        "mode": "payment",
+        "line_items[0][price]": product["price_id"],
+        "line_items[0][quantity]": "1",
+        # The webhook reads this to know which product was bought.
+        "metadata[product_slug]": product["slug"],
+        "allow_promotion_codes": "true",
+    }
+    after = f"https://{domain}/thank-you.html?session_id={{CHECKOUT_SESSION_ID}}"
+    if embedded:
+        form.update({"ui_mode": "embedded_page", "return_url": after})
+    else:
+        form.update({"success_url": after, "cancel_url": f"https://{domain}/"})
+    return stripe(key, "POST", "/v1/checkout/sessions", form)
+
+
+@app.post("/checkout-session")
+def create_checkout_session():
+    return {"clientSecret": checkout_session(embedded=True)["client_secret"]}
+
+
+@app.get("/buy")
+def buy():
+    return redirect(checkout_session(embedded=False)["url"], 303)
 
 
 @app.get("/health")

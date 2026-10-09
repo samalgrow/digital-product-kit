@@ -59,12 +59,17 @@ def http(method, url, headers=None, json_body=None, form=None, timeout=30):
     return json.loads(raw) if raw.strip() else {}
 
 
+STRIPE_VERSION = "2026-09-30.endive"
+
+
 def stripe(key, method, path, form=None):
     url = "https://api.stripe.com" + path
     if method == "GET" and form:
         url += "?" + urllib.parse.urlencode(form)
         form = None
-    return http(method, url, headers={"Authorization": f"Bearer {key}"}, form=form)
+    # Pinned, so the account's default API version can't change what we send or get back.
+    return http(method, url, form=form, headers={"Authorization": f"Bearer {key}",
+                                                 "Stripe-Version": STRIPE_VERSION})
 
 
 SCHEMA = """
